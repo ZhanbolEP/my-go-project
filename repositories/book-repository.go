@@ -1,101 +1,71 @@
 package repositories
 
 import (
-	"github.com/kamva/mgm/v3"
 	"github.com/ZhanbolEP/my-go-project/models"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"gorm.io/gorm"
 	"log/slog"
 )
 
 type BookRepository interface {
 	CreateBook(book *models.Book) error
-	GetBookById(id string) (*models.Book, error)
+	GetBookById(id uint) (*models.Book, error)
 	GetAllBooks() ([]models.Book, error)
 	UpdateBook(book *models.Book) error
-	DeleteBook(id string) error
+	DeleteBook(id uint) error
 	GetHomeBooks() ([]models.Book, []models.Book, error)
 }
 
-type bookRepository struct{}
-
-func NewBookRepository() BookRepository {
-	return &bookRepository{}
+type bookRepository struct {
+	db *gorm.DB
 }
 
-// CreateBook adds a new book to the database
+func NewBookRepository(db *gorm.DB) BookRepository {
+	return &bookRepository{db}
+}
+
 func (r *bookRepository) CreateBook(book *models.Book) error {
-	return mgm.Coll(book).Create(book)
+	return r.db.Create(book).Error
 }
 
-// GetBookById fetches a book by its ID
-func (r *bookRepository) GetBookById(id string) (*models.Book, error) {
-	objID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		return nil, err
-	}
-
-	book := &models.Book{}
-	err = mgm.Coll(book).FindByID(objID, book)
-	return book, err
+func (r *bookRepository) GetBookById(id uint) (*models.Book, error) {
+	var book models.Book
+	err := r.db.First(&book, id).Error
+	return &book, err
 }
 
-// GetAllBooks fetches all books from the database
 func (r *bookRepository) GetAllBooks() ([]models.Book, error) {
 	var books []models.Book
-	err := mgm.Coll(&models.Book{}).SimpleFind(&books, bson.M{})
+	err := r.db.Find(&books).Error
 	return books, err
 }
 
-// UpdateBook updates an existing book
 func (r *bookRepository) UpdateBook(book *models.Book) error {
-	return mgm.Coll(book).Update(book)
+	return r.db.Save(book).Error
 }
 
-func (r *bookRepository) DeleteBook(id string) error {
-	// Convert the string ID to a MongoDB ObjectID
-	objID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		return err
-	}
-
-	// Use DeleteOne to remove the book with the specified ID
-	_, err = mgm.Coll(&models.Book{}).DeleteOne(mgm.Ctx(), bson.M{"_id": objID})
-	return err
+func (r *bookRepository) DeleteBook(id uint) error {
+	return r.db.Delete(&models.Book{}, id).Error
 }
 
-// GetHomeBooks fetches trending and recommended books
 func (r *bookRepository) GetHomeBooks() ([]models.Book, []models.Book, error) {
 	var topSellerBooks []models.Book
 	var recommendedBooks []models.Book
-
-	// Get trending books
-	err := mgm.Coll(&models.Book{}).SimpleFind(&topSellerBooks, bson.M{"trending": true})
+	err := r.db.Where("trending = ?", true).Find(&topSellerBooks).Error
 	if err != nil {
 		slog.Error("Error getting top seller books", "error", err.Error())
-		return nil, nil, err
 	}
-
 	if len(topSellerBooks) > 0 {
-		// Get recommended books except for top sellers
-		topSellerIDs := []primitive.ObjectID{}
-		for _, book := range topSellerBooks {
-			topSellerIDs = append(topSellerIDs, book.ID)
+		// Get recommended books except top seller books
+		ids := make([]uint, len(topSellerBooks))
+		for i, book := range topSellerBooks {
+			ids[i] = book.ID
 		}
-		err = mgm.Coll(&models.Book{}).SimpleFind(&recommendedBooks, bson.M{
-			"trending": false,
-			"_id":      bson.M{"$nin": topSellerIDs},
-		})
-		if err != nil {
-			slog.Error("Error getting recommended books", "error", err.Error())
-		}
-	} else {
-		// Get all non-trending books
-		err = mgm.Coll(&models.Book{}).SimpleFind(&recommendedBooks, bson.M{"trending": false})
-		if err != nil {
-			slog.Error("Error getting recommended books", "error", err.Error())
-		}
+		err = r.db.Where("trending = ? AND id NOT IN (?)", false, ids).Find(&recommendedBooks).Error
+		return topSellerBooks, recommendedBooks, err
 	}
-
+	err = r.db.Where("trending = ?", false).Find(&recommendedBooks).Error
+	if err != nil {
+		slog.Error("Error getting recommended books", "error", err.Error())
+	}
 	return topSellerBooks, recommendedBooks, err
 }
