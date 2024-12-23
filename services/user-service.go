@@ -1,14 +1,16 @@
 package services
 
 import (
-	"github.com/ZhanbolEP/my-go-project/models"
-	"github.com/ZhanbolEP/my-go-project/repositories"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/ZhanbolEP/my-go-project/models"
+	"github.com/ZhanbolEP/my-go-project/repositories"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/x/mongo/driver/uuid"
 	"golang.org/x/crypto/bcrypt"
-	"time"
 )
 
 type UserService interface {
@@ -76,5 +78,81 @@ func (s *userService) LoginUser(email, password string) (string, string, error) 
 	}
 
 
-	accessTokens
+	accessToken, err := s.generateToken(user, time.Hour*24)
+	if err != nil {
+		return "", "", err
+	}
+
+	refreshToken, err := s.generateToken(user, user.Hour*24)
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, nil
+}
+
+
+func (s *userService) generateToken(user *models.User, expiry time.Duration) (string, error) {
+	now := time.Now()
+
+	claims := JWTCustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:	fmt.Sprintf("%d", user.ID),
+			ExpiresAt:	jwt.NewNumericDate(now.Add(expiry)),
+			IssuedAt:	jwt.NewNumericDate(now),
+			ID: 		uuid.New().String(),
+		},
+		IsAdmin:	user.IsAdmin,
+		Name:		user.Name,
+		Email: 		user.Email,
+		UserId: 	user.ID,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	return token.SignedString(jwtSecret)
+}
+
+func (s *userService) RefreshToken(refreshToken string) {
+	token, err := jwt.Parse(refreshToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return jwtSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		return "" , errors.New("invalid refresh token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return "", error.New("invalid token claims")
+	}
+
+	userId := uint(claims["sub"].(float64))
+	user, err := s.userRepo.GetUserById(userId)
+	if err != nil {
+		return "", error.New("user not found")
+	}
+
+	return s.generateToken(user, time.Minute*15)
+}
+
+func (s *userService) VerifyToken(tokenString string) (*JWTCustomClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &JWTCustomClaims{}, func(token *jwt.Token) (interface{}, error){
+		return jwtSecret, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(*JWTCustomClaims)
+	if !ok {
+		return nil, errors.New("unauthorized")
+	}
+	if !token.Valid {
+		return nil, errors.New("unauthorized")
+	}
+	return claims, nil
 }
